@@ -46,7 +46,6 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    // UPDATED: Added expiration_days mapping
     const {
       plan = '1D',
       max_devices = 3,
@@ -57,12 +56,15 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
     // Generate unique license key
     const licenseKey = `LIC-${crypto.randomBytes(16).toString('hex').toUpperCase()}`;
 
-    // Database expires_at calculation query logic
+    // Calculate expiration and dynamic plan name
     const expiresAt = new Date();
     let daysToAdd = 1;
+    let displayPlan = plan;
 
     if (plan === 'custom' && expiration_days) {
       daysToAdd = parseInt(expiration_days);
+      // 🔥 This forces the DB to save "Custom 365D" instead of "custom"
+      displayPlan = `Custom ${daysToAdd}D`;
     } else {
       const planDays: Record<string, number> = {
         '1D': 1,
@@ -75,11 +77,9 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
 
     expiresAt.setDate(expiresAt.getDate() + daysToAdd);
 
-    // The SQL equivalent to this insert: 
-    // INSERT INTO licenses (key, plan, max_devices, strict_mode, expires_at) VALUES (...)
     const { data, error } = await supabase.from('licenses').insert({
       key: licenseKey,
-      plan,
+      plan: displayPlan, // Saved dynamically
       max_devices,
       strict_mode,
       expires_at: expiresAt.toISOString(),
@@ -94,7 +94,7 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
       success: true,
       data: {
         license_key: licenseKey,
-        plan,
+        plan: displayPlan,
         max_devices,
         strict_mode,
         expires_at: expiresAt.toISOString(),
