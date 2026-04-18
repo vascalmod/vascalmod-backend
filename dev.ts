@@ -62,7 +62,8 @@ async function getLocationData(ip: string): Promise<any> {
     return {
       ip,
       city: (data.city as string) || 'Unknown',
-      country: (data.country_name as string) || 'Unknown',
+      // Store 2-letter ISO code for react-country-flag
+      country: (data.country as string) || (data.country_name as string) || 'Unknown',
       isp: (data.org as string) || 'Unknown',
       latitude: (data.latitude as number) || 0,
       longitude: (data.longitude as number) || 0,
@@ -190,25 +191,17 @@ app.post('/api/login', async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'License has expired' });
     }
 
-    // Get client IP (handle IPv6 localhost)
+    // Get client IP
     let clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || 
                    req.socket.remoteAddress || 
                    'unknown';
     
-    // Convert IPv6 localhost to meaningful value
     if (clientIp === '::1' || clientIp === '::ffff:127.0.0.1') {
       clientIp = '127.0.0.1';
     }
-    
-    console.log('📍 Client IP:', clientIp);
 
-    // Get geolocation data
     const locationData = await getLocationData(clientIp);
-    console.log('🗺️ Location:', locationData.city, locationData.country);
-
-    // Normalize HWID
     const normalizedHWID = normalizeHWID(hwid);
-    console.log('🔐 HWID (normalized):', normalizedHWID);
 
     // 1. Check if device already exists
     const { data: existingDevice, error: existingError } = await supabase
@@ -218,38 +211,21 @@ app.post('/api/login', async (req: Request, res: Response) => {
       .eq('hwid', normalizedHWID)
       .maybeSingle();
 
-    console.log('🔍 Device lookup - existing:', existingDevice, 'error:', existingError?.message);
-
-    // If device exists, just update and allow login
     if (existingDevice?.id) {
-      console.log('✅ Device already registered, updating last_seen');
       const { error: updateError } = await supabase
         .from('devices')
         .update({ last_seen: new Date().toISOString(), ip: clientIp })
         .eq('id', existingDevice.id);
-      
-      if (updateError) {
-        console.warn('⚠️ Failed to update device:', updateError);
-      } else {
-        console.log('🔄 Device updated:', normalizedHWID);
-      }
     } else {
-      // 2. Device doesn't exist - check if we can add a new one
-      console.log('📊 Checking device limit for license:', license_key, 'Max:', license.max_devices);
-      
+      // 2. Check device limit
       const { data: existingDevices, error: countError } = await supabase
         .from('devices')
         .select('id')
         .eq('license_key', license_key);
 
       const currentDeviceCount = existingDevices?.length || 0;
-      console.log('📈 Current device count:', currentDeviceCount, '/ Max:', license.max_devices);
 
-      // 3. Check if adding a new device would exceed the limit
       if (currentDeviceCount >= license.max_devices) {
-        console.log('❌ Device limit reached for:', license_key, `(${currentDeviceCount}/${license.max_devices})`);
-        
-        // Log failed attempt
         await supabase.from('login_logs').insert({
           license_key,
           hwid: normalizedHWID,
@@ -262,59 +238,35 @@ app.post('/api/login', async (req: Request, res: Response) => {
           status: 'failed_limit',
           timestamp: new Date().toISOString(),
         });
-
         return res.status(403).json({ error: 'Maximum devices exceeded' });
       }
 
-      // 4. Insert new device
-      console.log('➕ Creating new device:', normalizedHWID, 'for license:', license_key);
-      const { data: newDevice, error: devCreateError } = await supabase
-        .from('devices')
-        .insert({
-          license_key,
-          hwid: normalizedHWID,
-          ip: clientIp,
-          activated_at: new Date().toISOString(),
-          last_seen: new Date().toISOString(),
-        })
-        .select();
-      
-      if (devCreateError) {
-        console.error('❌ Failed to register device:', devCreateError);
-        return res.status(500).json({ error: 'Failed to register device' });
-      } else {
-        console.log('✅ Device registered:', newDevice);
-      }
-    }
-
-    // Log the login
-    const { error: logError } = await supabase
-      .from('login_logs')
-      .insert({
+      // 3. Insert new device
+      await supabase.from('devices').insert({
         license_key,
         hwid: normalizedHWID,
         ip: clientIp,
-        city: locationData.city,
-        country: locationData.country,
-        isp: locationData.isp,
-        latitude: locationData.latitude,
-        longitude: locationData.longitude,
-        status: 'success',
-        timestamp: new Date().toISOString(),
+        activated_at: new Date().toISOString(),
+        last_seen: new Date().toISOString(),
       });
-
-    if (logError) {
-      console.warn('⚠️ Failed to log login:', logError);
     }
 
-    // Generate JWT token
-    const token = generateToken({
+    // Log the login
+    await supabase.from('login_logs').insert({
       license_key,
-      hwid,
-      is_admin: false,
-    }, '7d');
+      hwid: normalizedHWID,
+      ip: clientIp,
+      city: locationData.city,
+      country: locationData.country,
+      isp: locationData.isp,
+      latitude: locationData.latitude,
+      longitude: locationData.longitude,
+      status: 'success',
+      timestamp: new Date().toISOString(),
+    });
 
-    console.log('✅ License activated:', license_key);
+    const token = generateToken({ license_key, hwid, is_admin: false }, '7d');
+
     res.json({
       success: true,
       message: 'License activated',
@@ -347,7 +299,6 @@ app.get('/api/licenses', async (req: Request, res: Response) => {
 
     if (error) throw error;
 
-    // Get device counts for each license
     const licensesWithDeviceCounts = await Promise.all(
       (licenses || []).map(async (license) => {
         const { data: devices } = await supabase
@@ -362,10 +313,8 @@ app.get('/api/licenses', async (req: Request, res: Response) => {
       })
     );
 
-    console.log('📋 GET /api/licenses - Returned', licensesWithDeviceCounts.length, 'licenses');
     res.json({ success: true, data: licensesWithDeviceCounts });
   } catch (error) {
-    console.error('❌ GET /api/licenses error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -383,7 +332,6 @@ app.post('/api/licenses', async (req: Request, res: Response) => {
 
     const action = req.query.action;
 
-    // Revoke License
     if (action === 'revoke') {
       const { license_key } = req.body;
       const { data, error } = await supabase
@@ -393,7 +341,6 @@ app.post('/api/licenses', async (req: Request, res: Response) => {
         .select();
 
       if (error) throw error;
-      console.log('✅ Database updated: License Revoked\n', data);
       return res.json({ success: true, data });
     }
 
@@ -405,16 +352,16 @@ app.post('/api/licenses', async (req: Request, res: Response) => {
       strict_mode = false 
     } = req.body;
 
-    const licenseKey = `VSCL-${Date.now()}-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
+    const licenseKey = `LIC-${Date.now()}-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
 
     const expires_at = new Date();
     let daysToAdd = 1;
-    let displayPlan = plan; // Will hold the nicely formatted plan name
+    let displayPlan = plan;
 
     if (plan === 'custom' && expiration_days) {
       daysToAdd = parseInt(expiration_days);
-      // 🔥 Dynamically configure how the plan is displayed in the DB/Dashboard
-      displayPlan = `${daysToAdd} Days`; 
+      // 🔥 Save as "Custom 365D" to DB
+      displayPlan = `Custom ${daysToAdd}D`; 
     } else {
       const planDays: Record<string, number> = {
         '1D': 1,
@@ -431,7 +378,7 @@ app.post('/api/licenses', async (req: Request, res: Response) => {
       .from('licenses')
       .insert({
         key: licenseKey,
-        plan: displayPlan, // <- Saves "15 Days" instead of "custom"
+        plan: displayPlan,
         max_devices,
         expires_at: expires_at.toISOString(),
         strict_mode,
@@ -441,14 +388,11 @@ app.post('/api/licenses', async (req: Request, res: Response) => {
 
     if (error) throw error;
 
-    console.log('✅ Database updated: New License Created\n', data);
-
     res.status(201).json({
       success: true,
       data,
     });
   } catch (error) {
-    console.error('Error creating license:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -468,10 +412,8 @@ app.get('/api/logs', async (req: Request, res: Response) => {
       .limit(50);
 
     if (error) throw error;
-    console.log('📝 GET /api/logs - Returned', data?.length || 0, 'logs');
     res.json({ success: true, data });
   } catch (error) {
-    console.error('❌ GET /api/logs error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -484,21 +426,9 @@ app.get('/api/stats', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const { data: licenses, error: licError } = await supabase
-      .from('licenses')
-      .select('*');
-    
-    const { data: devices, error: devError } = await supabase
-      .from('devices')
-      .select('*');
-
-    const { data: logs, error: logError } = await supabase
-      .from('login_logs')
-      .select('*');
-
-    if (licError || devError || logError) {
-      console.error('❌ Stats query errors:', { licError, devError, logError });
-    }
+    const { data: licenses } = await supabase.from('licenses').select('*');
+    const { data: devices } = await supabase.from('devices').select('*');
+    const { data: logs } = await supabase.from('login_logs').select('*');
 
     const stats = {
       total_licenses: licenses?.length || 0,
@@ -508,43 +438,16 @@ app.get('/api/stats', async (req: Request, res: Response) => {
       success_logins: logs?.filter((l: any) => l.status === 'success').length || 0,
     };
 
-    console.log('📊 GET /api/stats -', stats);
     res.json({ success: true, data: stats });
   } catch (error) {
-    console.error('❌ GET /api/stats error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// 404
 app.use((req: Request, res: Response) => {
-  res.status(404).json({
-    error: 'Not found',
-    path: req.path,
-  });
+  res.status(404).json({ error: 'Not found', path: req.path });
 });
 
 app.listen(PORT, () => {
-  console.log(`
-╔════════════════════════════════════════════╗
-║   License Management Backend Dev Server    ║
-╚════════════════════════════════════════════╝
-
-🚀 Server running on http://localhost:${PORT}
-
-📝 Available endpoints:
-  GET  /api/health          - Health check
-  POST /api/admin-login     - Admin authentication ✅ WORKING
-  POST /api/login           - License activation
-  GET  /api/licenses        - List licenses
-  POST /api/licenses        - Create / Revoke licenses
-  GET  /api/logs            - View login logs
-  GET  /api/stats           - Dashboard statistics
-
-✓ Connected to Supabase
-✓ Database queries enabled
-✓ JWT authentication enabled
-
-Press Ctrl+C to stop the server
-  `);
+  console.log(`🚀 Dev Server running on http://localhost:${PORT}`);
 });
