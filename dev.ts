@@ -62,8 +62,7 @@ async function getLocationData(ip: string): Promise<any> {
     return {
       ip,
       city: (data.city as string) || 'Unknown',
-      // Store 2-letter ISO code for react-country-flag
-      country: (data.country as string) || (data.country_name as string) || 'Unknown',
+      country: (data.country_name as string) || 'Unknown',
       isp: (data.org as string) || 'Unknown',
       latitude: (data.latitude as number) || 0,
       longitude: (data.longitude as number) || 0,
@@ -360,7 +359,7 @@ app.post('/api/licenses', async (req: Request, res: Response) => {
 
     if (plan === 'custom' && expiration_days) {
       daysToAdd = parseInt(expiration_days);
-      // 🔥 Save as "Custom 365D" to DB
+      // 🔥 Save as "Custom {Days}D" to DB
       displayPlan = `Custom ${daysToAdd}D`; 
     } else {
       const planDays: Record<string, number> = {
@@ -378,7 +377,7 @@ app.post('/api/licenses', async (req: Request, res: Response) => {
       .from('licenses')
       .insert({
         key: licenseKey,
-        plan: displayPlan,
+        plan: displayPlan, // Dynamic string insertion
         max_devices,
         expires_at: expires_at.toISOString(),
         strict_mode,
