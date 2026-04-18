@@ -405,15 +405,16 @@ app.post('/api/licenses', async (req: Request, res: Response) => {
       strict_mode = false 
     } = req.body;
 
-    // Generate unique license key
-    const licenseKey = `LIC-${Date.now()}-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
+    const licenseKey = `VSCL-${Date.now()}-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
 
-    // Database query logic
     const expires_at = new Date();
     let daysToAdd = 1;
+    let displayPlan = plan; // Will hold the nicely formatted plan name
 
     if (plan === 'custom' && expiration_days) {
       daysToAdd = parseInt(expiration_days);
+      // 🔥 Dynamically configure how the plan is displayed in the DB/Dashboard
+      displayPlan = `${daysToAdd} Days`; 
     } else {
       const planDays: Record<string, number> = {
         '1D': 1,
@@ -426,12 +427,11 @@ app.post('/api/licenses', async (req: Request, res: Response) => {
 
     expires_at.setDate(expires_at.getDate() + daysToAdd);
 
-    // Supabase Insert execution
     const { data, error } = await supabase
       .from('licenses')
       .insert({
         key: licenseKey,
-        plan,
+        plan: displayPlan, // <- Saves "15 Days" instead of "custom"
         max_devices,
         expires_at: expires_at.toISOString(),
         strict_mode,
