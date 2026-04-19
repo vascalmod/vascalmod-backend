@@ -1,20 +1,11 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
-import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { setCorsHeaders, handleCorsPreFlight } from '../lib/cors';
 
 interface LoginRequest {
   license_key: string;
   hwid: string;
-}
-
-interface LoginResponse {
-  success: boolean;
-  message: string;
-  token?: string;
-  expires_at?: string;
-  error?: string;
 }
 
 interface LocationData {
@@ -32,12 +23,12 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY || ''
 );
 
-// Normalize HWID (remove special chars, lowercase)
+// Normalize HWID
 function normalizeHWID(hwid: string): string {
   return hwid.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 }
 
-// Get geolocation data (Hybrid: Vercel headers for Prod, Mock data for Local Dev)
+// Get geolocation data
 async function getLocationData(req: VercelRequest): Promise<LocationData> {
   const clientIP =
     (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() ||
@@ -62,28 +53,21 @@ async function getLocationData(req: VercelRequest): Promise<LocationData> {
     };
   }
 
-  // Production on Vercel
   return {
     ip: clientIP,
     city: decodeURIComponent((req.headers['x-vercel-ip-city'] as string) || 'Unknown'),
     country: (req.headers['x-vercel-ip-country'] as string) || 'Unknown',
-    isp: 'Unknown', // Vercel does not provide ISP headers natively
+    isp: 'Unknown', 
     latitude: parseFloat((req.headers['x-vercel-ip-latitude'] as string) || '0'),
     longitude: parseFloat((req.headers['x-vercel-ip-longitude'] as string) || '0'),
   };
 }
 
-// Main handler
 export default async function handler(
   req: VercelRequest,
   res: VercelResponse
 ): Promise<VercelResponse> {
-  // Handle CORS preflight
-  if (handleCorsPreFlight(req, res)) {
-    return res;
-  }
-
-  // Add CORS headers to all responses
+  if (handleCorsPreFlight(req, res)) return res;
   setCorsHeaders(res);
 
   if (req.method !== 'POST') {
@@ -94,18 +78,13 @@ export default async function handler(
     const { license_key, hwid } = req.body as LoginRequest;
 
     if (!license_key || !hwid) {
-      return res.status(400).json({
-        success: false,
-        error: 'license_key and hwid required',
-      });
+      return res.status(400).json({ success: false, error: 'license_key and hwid required' });
     }
 
     const normalizedHWID = normalizeHWID(hwid);
-
-    // Get location data instantly via headers or mock
     const locationData = await getLocationData(req);
 
-    // Check license in database
+    // 1. Fetch License
     const { data: license, error: licenseError } = await supabase
       .from('licenses')
       .select('*')
@@ -118,40 +97,59 @@ export default async function handler(
     let token: string | undefined;
     let expires_at: string | undefined;
 
-    if (!license) {
+    if (!license || licenseError) {
       message = 'Invalid license key';
-    } else if (new Date(license.expires_at) < new Date()) {
-      message = 'License expired';
+    } else if (license.revoked) {
+      message = 'License has been revoked';
     } else {
-      // Check device activation rules
-      const { data: devices, error: devicesError } = await supabase
+      
+      // 2. Auto-delete EXPIRED devices for this key to free up slots
+      await supabase
         .from('devices')
-        .select('hwid')
+        .delete()
+        .eq('license_key', license_key)
+        .lt('expires_at', new Date().toISOString());
+
+      // 3. Fetch current active devices
+      const { data: devices } = await supabase
+        .from('devices')
+        .select('*')
         .eq('license_key', license_key);
 
       const activatedDevices = devices || [];
-      const deviceCount = activatedDevices.length;
+      const currentDevice = activatedDevices.find((d) => d.hwid === normalizedHWID);
 
-      // Check if device already registered
-      if (activatedDevices.some((d) => d.hwid === normalizedHWID)) {
-        // Device already registered - allow login
+      // 4. Logic core
+      if (currentDevice) {
+        // Device is already registered and active
         success = true;
         status = 'success';
         message = 'Login successful';
-      }
-      // Check max devices BEFORE inserting new device (applies to all plans)
-      else if (deviceCount >= license.max_devices) {
+        expires_at = currentDevice.expires_at;
+
+        // Update last seen
+        await supabase.from('devices').update({ 
+          last_seen: new Date().toISOString(), 
+          ip: locationData.ip 
+        }).eq('id', currentDevice.id);
+
+      } else if (activatedDevices.length >= license.max_devices) {
+        // Max devices reached, no room for a new HWID
         message = 'Max device limit reached';
-      }
-      // Device count is under limit - register new device
-      else {
-        // Register new device
+        status = 'failed_limit';
+      } else {
+        // Slot available: Register NEW device and start its personal timer
+        const deviceExpiration = new Date();
+        deviceExpiration.setDate(deviceExpiration.getDate() + license.duration_days);
+        expires_at = deviceExpiration.toISOString();
+
         const { error: insertError } = await supabase.from('devices').insert({
           license_key,
           hwid: normalizedHWID,
           ip: locationData.ip,
           activated_at: new Date().toISOString(),
           last_seen: new Date().toISOString(),
+          expires_at: expires_at
         });
 
         if (insertError) {
@@ -160,19 +158,17 @@ export default async function handler(
         } else {
           success = true;
           status = 'success';
-          message = 'Login successful';
+          message = 'Device activated successfully';
         }
       }
 
-      if (success) {
-        expires_at = license.expires_at;
-
-        // Generate JWT token
+      // Generate token
+      if (success && expires_at) {
         token = jwt.sign(
           {
             license_key,
             hwid: normalizedHWID,
-            exp: Math.floor(new Date(license.expires_at).getTime() / 1000),
+            exp: Math.floor(new Date(expires_at).getTime() / 1000),
           },
           process.env.JWT_SECRET || '3ed92d36086fdf3a888cfc54812a83075fc9596b470d2df98a7f45c3d75b5b9d'
         );
@@ -200,24 +196,13 @@ export default async function handler(
         message,
         token,
         expires_at,
+        plan: license?.plan,
+        max_devices: license?.max_devices
       });
     } else {
-      return res.status(401).json({
-        success: false,
-        error: message,
-      });
+      return res.status(401).json({ success: false, error: message });
     }
   } catch (error) {
-    console.error('Login error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      debug: process.env.NODE_ENV === 'development' ? {
-        errorMessage,
-        errorType: error instanceof Error ? error.name : typeof error,
-        stack: error instanceof Error ? error.stack : undefined,
-      } : undefined,
-    });
+    return res.status(500).json({ success: false, error: 'Internal server error' });
   }   
 }
