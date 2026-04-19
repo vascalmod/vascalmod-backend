@@ -56,14 +56,12 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
     // Generate unique license key
     const licenseKey = `LIC-${crypto.randomBytes(16).toString('hex').toUpperCase()}`;
 
-    // Calculate expiration and dynamic plan name
-    const expiresAt = new Date();
+    // Calculate dynamic plan name and duration
     let daysToAdd = 1;
     let displayPlan = plan;
 
     if (plan === 'custom' && expiration_days) {
       daysToAdd = parseInt(expiration_days);
-      // 🔥 This forces the DB to save "Custom 365D" instead of "custom"
       displayPlan = `Custom ${daysToAdd}D`;
     } else {
       const planDays: Record<string, number> = {
@@ -75,14 +73,13 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
       daysToAdd = planDays[plan] || 1;
     }
 
-    expiresAt.setDate(expiresAt.getDate() + daysToAdd);
-
+    // Insert with duration_days instead of expires_at
     const { data, error } = await supabase.from('licenses').insert({
       key: licenseKey,
-      plan: displayPlan, // Saved dynamically
+      plan: displayPlan,
       max_devices,
       strict_mode,
-      expires_at: expiresAt.toISOString(),
+      duration_days: daysToAdd,
       created_at: new Date().toISOString(),
     });
 
@@ -97,7 +94,7 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
         plan: displayPlan,
         max_devices,
         strict_mode,
-        expires_at: expiresAt.toISOString(),
+        duration_days: daysToAdd,
       },
     });
   } catch (error) {
@@ -125,6 +122,9 @@ async function revokeLicense(req: VercelRequest, res: VercelResponse) {
     if (error) {
       return res.status(500).json({ error: error.message });
     }
+
+    // Optional: Delete all devices associated with a revoked key instantly
+    await supabase.from('devices').delete().eq('license_key', license_key);
 
     return res.status(200).json({
       success: true,
