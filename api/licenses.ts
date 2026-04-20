@@ -54,7 +54,7 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
     } = req.body;
 
     // Generate unique license key
-    const licenseKey = `LIC-${crypto.randomBytes(16).toString('hex').toUpperCase()}`;
+    const licenseKey = `VSCL-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
 
     // Calculate dynamic plan name and duration
     let daysToAdd = 1;
