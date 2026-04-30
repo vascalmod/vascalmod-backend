@@ -1,23 +1,15 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
-import { verifyJWT } from '../lib/auth';
 import { setCorsHeaders, handleCorsPreFlight } from '../lib/cors';
+import { verifyJWT } from '../lib/auth';
 
 const supabase = createClient(
   process.env.SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_KEY || ''
+  process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 );
 
-interface DashboardStats {
-  total_licenses: number;
-  active_licenses: number;
-  total_devices: number;
-  total_logins: number;
-  failed_logins: number;
-  success_rate: number;
-}
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // 1. Handle CORS
   if (handleCorsPreFlight(req, res)) return res;
   setCorsHeaders(res);
 
@@ -26,36 +18,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    // 2. Authenticate Admin
     const token = req.headers.authorization?.replace('Bearer ', '');
     const verified = verifyJWT(token || '', true);
+    if (!verified) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
 
-    if (!verified) return res.status(401).json({ error: 'Unauthorized' });
+    // 3. Calculate Stats
+    // Total Licenses
+    const { count: totalLicenses } = await supabase
+      .from('licenses')
+      .select('*', { count: 'exact', head: true });
 
-    const { data: licenses } = await supabase.from('licenses').select('revoked');
-    const { data: devices } = await supabase.from('devices').select('id', { count: 'exact' });
-    const { data: logs } = await supabase.from('login_logs').select('status', { count: 'exact' });
+    // Active Devices (Devices whose expires_at is strictly in the future)
+    const now = new Date().toISOString();
+    const { count: activeDevices } = await supabase
+      .from('devices')
+      .select('*', { count: 'exact', head: true })
+      .gt('expires_at', now);
 
-    const totalLicenses = licenses?.length || 0;
-    
-    // Now an active key is just a key that hasn't been manually revoked
-    const activeLicenses = licenses?.filter((l) => !l.revoked).length || 0;
+    // Total Devices Ever Registered
+    const { count: totalDevices } = await supabase
+      .from('devices')
+      .select('*', { count: 'exact', head: true });
 
-    const totalLogins = logs?.length || 0;
-    const failedLogins = logs?.filter((l) => l.status === 'failed' || l.status === 'failed_limit').length || 0;
-    const successLogins = totalLogins - failedLogins;
-    const successRate = totalLogins > 0 ? (successLogins / totalLogins) * 100 : 0;
+    // Today's Logs (from the login_logs table)
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const { count: todaysLogs } = await supabase
+      .from('login_logs')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', startOfToday.toISOString());
 
-    const stats: DashboardStats = {
-      total_licenses: totalLicenses,
-      active_licenses: activeLicenses,
-      total_devices: devices?.length || 0,
-      total_logins: totalLogins,
-      failed_logins: failedLogins,
-      success_rate: parseFloat(successRate.toFixed(2)),
-    };
+    // 4. Return Clean JSON
+    return res.status(200).json({
+      success: true,
+      data: {
+        total_licenses: totalLicenses || 0,
+        active_devices: activeDevices || 0,
+        total_devices: totalDevices || 0,
+        todays_logs: todaysLogs || 0
+      }
+    });
 
-    return res.status(200).json({ success: true, data: stats });
-  } catch (error) {
-    return res.status(500).json({ error: 'Internal server error' });
+  } catch (err: any) {
+    console.error('Stats Error:', err);
+    return res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 }
