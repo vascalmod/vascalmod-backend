@@ -19,17 +19,41 @@ async function getLicenses(req: VercelRequest, res: VercelResponse) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
+    // CHANGED: We now fetch the actual devices array to accurately count and verify expiry dates
     const { data: licenses, error } = await supabase
       .from('licenses')
-      .select('*, devices(count)');
+      .select('*, devices(id, hwid, activated_at, expires_at)')
+      .order('created_at', { ascending: false });
 
     if (error) {
       return res.status(500).json({ error: error.message });
     }
 
+    // CHANGED: Map over the data to format it cleanly for the frontend dashboard
+    const formattedLicenses = licenses.map((license) => {
+      const total_slots = license.max_devices;
+      const used_slots = license.devices ? license.devices.length : 0;
+
+      return {
+        ...license,
+        active_devices_text: `${used_slots}/${total_slots}`,
+        duration_text: `${license.duration_days} Day(s) / Device`,
+        status: license.revoked ? 'Revoked' : 'Active',
+        devices: (license.devices || []).map((dev: any) => {
+          // Calculate if this specific device has expired
+          const isExpired = new Date() > new Date(dev.expires_at);
+          
+          return {
+            ...dev,
+            status: isExpired ? 'Expired' : 'Active'
+          };
+        })
+      };
+    });
+
     return res.status(200).json({
       success: true,
-      data: licenses,
+      data: formattedLicenses,
     });
   } catch (error) {
     return res.status(500).json({ error: 'Internal server error' });
