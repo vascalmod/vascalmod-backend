@@ -2,22 +2,15 @@ import { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { setCorsHeaders, handleCorsPreFlight } from '../lib/cors';
 
-// Initialize Supabase (Checking both standard service key environment variable names)
 const supabase = createClient(
   process.env.SUPABASE_URL || '',
   process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 );
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // 1. Handle CORS Preflight (Crucial for Vercel/Frontend communication)
-  if (handleCorsPreFlight(req, res)) {
-    return res;
-  }
-  
-  // 2. Add CORS headers to the main response
+  if (handleCorsPreFlight(req, res)) return res;
   setCorsHeaders(res);
 
-  // 3. Ensure this is a POST request
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -25,12 +18,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const { license_key, hwid, ip } = req.body;
 
-    // Validate inputs
     if (!license_key || !hwid) {
       return res.status(400).json({ error: 'License key and HWID are required.' });
     }
 
-    // --- STEP 1: Validate the License ---
+    // 1. Validate the License
     const { data: license, error: licenseError } = await supabase
       .from('licenses')
       .select('*')
@@ -45,8 +37,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(403).json({ error: 'This license has been revoked.' });
     }
 
-    // --- STEP 2: Check if the Device (hwid) is already registered ---
-    const { data: existingDevice, error: deviceError } = await supabase
+    // Helper function to record the login log quietly
+    const recordLoginLog = async () => {
+      await supabase.from('login_logs').insert([{
+        license_key: license_key,
+        hwid: hwid,
+        ip: ip || null
+      }]);
+    };
+
+    // 2. Check if the Device exists
+    const { data: existingDevice } = await supabase
       .from('devices')
       .select('*')
       .eq('license_key', license_key)
@@ -54,51 +55,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .single();
 
     if (existingDevice) {
-      // DEVICE EXISTS: Strictly check Expiry Date
       const now = new Date();
-      const expiryDate = new Date(existingDevice.expires_at);
-
-      if (now > expiryDate) {
+      if (now > new Date(existingDevice.expires_at)) {
         return res.status(403).json({ error: 'License Expired for this device.' });
       }
 
-      // Update last_used and ip, but DO NOT touch the fixed expires_at date
       await supabase
         .from('devices')
         .update({ last_used: now.toISOString(), ip: ip || existingDevice.ip })
         .eq('id', existingDevice.id);
 
+      await recordLoginLog(); // Trigger the log
+
       return res.status(200).json({ 
         success: true,
         message: 'Login successful', 
+        plan: license.plan,         // FIX: Returns plan to terminal
         expires_at: existingDevice.expires_at 
       });
     }
 
-    // --- STEP 3: Register New Device (Consume a slot) ---
-    // Count exact active devices for this license
-    const { count: activeDeviceCount, error: countError } = await supabase
+    // 3. Register New Device
+    const { count: activeDeviceCount } = await supabase
       .from('devices')
       .select('*', { count: 'exact', head: true })
       .eq('license_key', license_key);
 
-    if (countError) {
-      throw countError;
-    }
-
-    // Block if max devices reached
     if ((activeDeviceCount || 0) >= license.max_devices) {
       return res.status(403).json({ 
         error: `Device limit reached. (${activeDeviceCount}/${license.max_devices} slots used)` 
       });
     }
 
-    // Calculate the fixed expiration date based on the plan's duration
     const activationDate = new Date();
     const expirationDate = new Date();
     expirationDate.setDate(activationDate.getDate() + license.duration_days);
 
-    // Insert the new device and lock in the expires_at date
     const { data: newDevice, error: insertError } = await supabase
       .from('devices')
       .insert([{
@@ -113,18 +105,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .select()
       .single();
 
-    if (insertError) {
-      throw insertError;
-    }
+    if (insertError) throw insertError;
+
+    await recordLoginLog(); // Trigger the log
 
     return res.status(200).json({ 
       success: true,
       message: 'Device activated successfully', 
+      plan: license.plan,         // FIX: Returns plan to terminal
       expires_at: newDevice.expires_at 
     });
 
   } catch (err: any) {
-    console.error('Login error:', err);
     return res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 }
