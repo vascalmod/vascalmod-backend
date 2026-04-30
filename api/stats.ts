@@ -9,7 +9,6 @@ const supabase = createClient(
 );
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // 1. Handle CORS
   if (handleCorsPreFlight(req, res)) return res;
   setCorsHeaders(res);
 
@@ -18,40 +17,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // 2. Authenticate Admin
     const token = req.headers.authorization?.replace('Bearer ', '');
     const verified = verifyJWT(token || '', true);
-    if (!verified) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+    if (!verified) return res.status(401).json({ error: 'Unauthorized' });
 
-    // 3. Calculate Stats
-    // Total Licenses
+    // 1. Total Licenses
     const { count: totalLicenses } = await supabase
       .from('licenses')
       .select('*', { count: 'exact', head: true });
 
-    // Active Devices (Devices whose expires_at is strictly in the future)
+    // 2. Active Devices (Devices where expires_at is in the future)
     const now = new Date().toISOString();
     const { count: activeDevices } = await supabase
       .from('devices')
       .select('*', { count: 'exact', head: true })
       .gt('expires_at', now);
 
-    // Total Devices Ever Registered
+    // 3. Total Devices
     const { count: totalDevices } = await supabase
       .from('devices')
       .select('*', { count: 'exact', head: true });
 
-    // Today's Logs (from the login_logs table)
+    // 4. Today's Logs (from the login_logs table)
     const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+    startOfToday.setUTCHours(0, 0, 0, 0); // Sets time to midnight UTC securely
     const { count: todaysLogs } = await supabase
       .from('login_logs')
       .select('*', { count: 'exact', head: true })
       .gte('created_at', startOfToday.toISOString());
 
-    // 4. Return Clean JSON
     return res.status(200).json({
       success: true,
       data: {
@@ -63,7 +57,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
   } catch (err: any) {
-    console.error('Stats Error:', err);
     return res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 }
