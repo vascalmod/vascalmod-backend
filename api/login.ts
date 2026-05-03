@@ -63,7 +63,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         city: geoData.city,
         country: geoData.country,
         isp: geoData.isp,
-        timestamp: new Date().toISOString()
+        timestamp: toUtc(new Date())
       }]);
     };
 
@@ -83,7 +83,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       await supabase
         .from('devices')
-        .update({ last_used: now.toISOString(), ip: ip || existingDevice.ip })
+        .update({ last_used: toUtc(now), ip: ip || existingDevice.ip })
         .eq('id', existingDevice.id);
 
       await recordLoginLog(); // Trigger the log
@@ -114,16 +114,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const durationSec = license.duration_seconds ?? (license.duration_days * 86400);
     expirationDate.setTime(activationDate.getTime() + (durationSec * 1000));
 
+    // Format dates explicitly as UTC to prevent Supabase timezone conversion
+    const toUtc = (d: Date) => d.toISOString().replace('T', ' ').replace('Z', '');
+
     const { data: newDevice, error: insertError } = await supabase
       .from('devices')
       .insert([{
         license_key: license_key,
         hwid: hwid,
         ip: ip || null,
-        activated_at: activationDate.toISOString(),
-        expires_at: expirationDate.toISOString(),
-        last_used: activationDate.toISOString(),
-        last_seen: activationDate.toISOString()
+        activated_at: toUtc(activationDate),
+        expires_at: toUtc(expirationDate),
+        last_used: toUtc(activationDate),
+        last_seen: toUtc(activationDate)
       }])
       .select()
       .single();
