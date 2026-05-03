@@ -43,7 +43,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Helper function to record the login log quietly with geolocation
-    const recordLoginLog = async () => {
+    const recordLoginLog = async (status = 'success', errorMsg = null) => {
       let geoData = { city: 'Unknown', country: 'Unknown', isp: 'Unknown' };
       if (ip && !ip.startsWith('192.168.') && !ip.startsWith('10.') && !ip.startsWith('127.')) {
           try {
@@ -60,16 +60,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       await supabase.from('login_logs').insert([{
-        license_key: license_key,
-        hwid: hwid,
+        license_key: license_key || null,
+        hwid: hwid || null,
         ip: ip || '0.0.0.0',
-        status: 'success',
+        status: status,
         city: geoData.city,
         country: geoData.country,
         isp: geoData.isp,
-        timestamp: toUtc(new Date())
+        timestamp: toUtc(new Date()),
+        error_message: errorMsg
       }]);
     };
+
+    if (!license_key || !license_key.trim()) {
+      await recordLoginLog('failed', 'Empty license key');
+      return res.status(400).json({ error: 'License key is required.' });
+    }
+    if (!hwid || !hwid.trim()) {
+      await recordLoginLog('failed', 'Missing HWID');
+      return res.status(400).json({ error: 'HWID is required.' });
+    }
+
+    // 1. Validate the License
+    const { data: license, error: licenseError } = await supabase
+      .from('licenses')
+      .select('*')
+      .eq('key', license_key)
+      .single();
+
+    if (licenseError || !license) {
+      await recordLoginLog('failed', 'Invalid license key');
+      return res.status(404).json({ error: 'Invalid license key.' });
+    }
+
+    if (license.revoked) {
+      await recordLoginLog('failed', 'License revoked');
+      return res.status(403).json({ error: 'This license has been revoked.' });
+    }
 
     // 2. Check if the Device exists
     const { data: existingDevice } = await supabase
@@ -82,6 +109,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (existingDevice) {
       const now = new Date();
       if (now > new Date(existingDevice.expires_at)) {
+        await recordLoginLog('failed', 'License expired');
         return res.status(403).json({ error: 'License Expired for this device.' });
       }
 
@@ -107,6 +135,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .eq('license_key', license_key);
 
     if ((activeDeviceCount || 0) >= license.max_devices) {
+      await recordLoginLog('failed', 'Device limit reached');
       return res.status(403).json({ 
         error: `Device limit reached. (${activeDeviceCount}/${license.max_devices} slots used)` 
       });
