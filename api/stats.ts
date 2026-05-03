@@ -44,7 +44,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { count: todaysLogs } = await supabase
       .from('login_logs')
       .select('*', { count: 'exact', head: true })
-      .gte('timestamp', startOfToday.toISOString());
+      .gte('created_at', startOfToday.toISOString());
 
     return res.status(200).json({
       success: true,
