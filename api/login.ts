@@ -16,7 +16,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const { license_key, hwid, ip } = req.body;
+    const { license_key, hwid } = req.body;
+    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || (req.headers['x-real-ip'] as string) || '0.0.0.0';
 
     if (!license_key || !hwid) {
       return res.status(400).json({ error: 'License key and HWID are required.' });
