@@ -61,7 +61,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         city: geoData.city,
         country: geoData.country,
         isp: geoData.isp,
-        create_at: new Date().toISOString()
+        timestamp: new Date().toISOString()
       }]);
     };
 

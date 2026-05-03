@@ -42,7 +42,7 @@ export default async function handler(
     let query = supabase
       .from('login_logs')
       .select('*', { count: 'exact' })
-      .order('created_at', { ascending: false })
+      .order('timestamp', { ascending: false })
       .range(
         parseInt(offset as string),
         parseInt(offset as string) + parseInt(limit as string)
