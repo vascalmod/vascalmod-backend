@@ -104,13 +104,13 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
     }
 
     // Insert with duration_seconds for precise expiration control
+    // Fallback to 1 day minimum for integer column constraint
     const { data, error } = await supabase.from('licenses').insert({
       key: licenseKey,
       plan: displayPlan,
       max_devices,
       strict_mode,
-      duration_days: Math.floor(totalSeconds / 86400),
-      duration_seconds: totalSeconds,
+      duration_days: totalSeconds > 0 ? Math.ceil(totalSeconds / 86400) : 1,
       created_at: new Date().toISOString(),
     });
 
