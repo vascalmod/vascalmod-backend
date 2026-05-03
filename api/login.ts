@@ -37,12 +37,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(403).json({ error: 'This license has been revoked.' });
     }
 
-    // Helper function to record the login log quietly
+    // Helper function to record the login log quietly with geolocation
     const recordLoginLog = async () => {
+      let geoData = { city: 'Unknown', country: 'Unknown', isp: 'Unknown' };
+      if (ip && !ip.startsWith('192.168.') && !ip.startsWith('10.') && !ip.startsWith('127.')) {
+          try {
+              const geoRes = await fetch(`http://ip-api.com/json/${ip}`);
+              if (geoRes.ok) {
+                  const geoJson = await geoRes.json();
+                  geoData = {
+                      city: geoJson.city || 'Unknown',
+                      country: geoJson.countryCode || geoJson.country || 'Unknown',
+                      isp: geoJson.isp || 'Unknown'
+                  };
+              }
+          } catch (e) { /* Ignore geo errors */ }
+      }
+
       await supabase.from('login_logs').insert([{
         license_key: license_key,
         hwid: hwid,
-        ip: ip || null
+        ip: ip || null,
+        city: geoData.city,
+        country: geoData.country,
+        isp: geoData.isp,
+        timestamp: new Date().toISOString()
       }]);
     };
 

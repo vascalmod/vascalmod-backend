@@ -53,7 +53,7 @@ export default async function handler(
     }
 
     if (country) {
-      query = query.eq('location->country', country);
+      query = query.eq('country', country);
     }
 
     const { data: logs, count, error } = await query;
