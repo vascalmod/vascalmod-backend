@@ -40,10 +40,20 @@ async function getLicenses(req: VercelRequest, res: VercelResponse) {
       
       const used_slots = licenseDevices.length;
 
+      const sec = license.duration_seconds ?? (license.duration_days * 86400);
+      let durationText;
+      if (sec >= 86400) {
+        durationText = `${sec / 86400} Day(s) / Device`;
+      } else if (sec >= 3600) {
+        durationText = `${sec / 3600}h / Device`;
+      } else {
+        durationText = `${sec / 60}m / Device`;
+      }
+
       return {
         ...license,
         active_devices_text: `${used_slots}/${total_slots}`,
-        duration_text: `${license.duration_days} Day(s) / Device`,
+        duration_text: durationText,
         status: license.revoked ? 'Revoked' : 'Active',
         devices: licenseDevices.map((dev: any) => ({
           ...dev,
