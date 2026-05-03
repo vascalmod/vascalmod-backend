@@ -110,7 +110,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const activationDate = new Date();
     const expirationDate = new Date();
-    expirationDate.setDate(activationDate.getDate() + license.duration_days);
+    // Use duration_seconds for precise control (minutes/hours), fallback to duration_days
+    const durationSec = license.duration_seconds ?? (license.duration_days * 86400);
+    expirationDate.setTime(activationDate.getTime() + (durationSec * 1000));
 
     const { data: newDevice, error: insertError } = await supabase
       .from('devices')

@@ -76,18 +76,23 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
       max_devices = 3,
       strict_mode = false,
       expiration_days = null,
+      expiration_hours = 0,
+      expiration_minutes = 0,
     } = req.body;
 
     // Generate unique license key
     const licenseKey = `VSCL-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
 
-    // Calculate dynamic plan name and duration
-    let daysToAdd = 1;
+    // Calculate total duration in seconds from days + hours + minutes
+    let totalSeconds = 0;
     let displayPlan = plan;
 
-    if (plan === 'custom' && expiration_days) {
-      daysToAdd = parseInt(expiration_days);
-      displayPlan = `Custom ${daysToAdd}D`;
+    if (plan === 'custom') {
+      const d = parseInt(expiration_days) || 0;
+      const h = parseInt(expiration_hours) || 0;
+      const m = parseInt(expiration_minutes) || 0;
+      totalSeconds = (d * 86400) + (h * 3600) + (m * 60);
+      displayPlan = `Custom ${d}d ${h}h ${m}m`;
     } else {
       const planDays: Record<string, number> = {
         '1D': 1,
@@ -95,16 +100,17 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
         '7D': 7,
         '30D': 30,
       };
-      daysToAdd = planDays[plan] || 1;
+      totalSeconds = (planDays[plan] || 1) * 86400;
     }
 
-    // Insert with duration_days instead of expires_at
+    // Insert with duration_seconds for precise expiration control
     const { data, error } = await supabase.from('licenses').insert({
       key: licenseKey,
       plan: displayPlan,
       max_devices,
       strict_mode,
-      duration_days: daysToAdd,
+      duration_days: totalSeconds / 86400,
+      duration_seconds: totalSeconds,
       created_at: new Date().toISOString(),
     });
 
