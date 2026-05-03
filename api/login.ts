@@ -19,6 +19,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { license_key, hwid } = req.body;
     const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || (req.headers['x-real-ip'] as string) || '0.0.0.0';
 
+    // Date formatting helpers
+    const toUtc = (d: Date) => d.toISOString().replace('T', ' ').replace('Z', '');
+    const toPht = (d: Date) => d.toLocaleString('en-PH', { timeZone: 'Asia/Manila', dateStyle: 'medium', timeStyle: 'medium' }) + ' PHT';
+
     if (!license_key || !hwid) {
       return res.status(400).json({ error: 'License key and HWID are required.' });
     }
@@ -91,8 +95,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ 
         success: true,
         message: 'Login successful', 
-        plan: license.plan,         // FIX: Returns plan to terminal
-        expires_at: existingDevice.expires_at 
+        plan: license.plan,
+        expires_at: toPht(new Date(existingDevice.expires_at))
       });
     }
 
@@ -113,9 +117,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Use duration_seconds if available, otherwise fall back to duration_days
     const durationSec = license.duration_seconds ?? (license.duration_days * 86400);
     expirationDate.setTime(activationDate.getTime() + (durationSec * 1000));
-
-    // Format dates explicitly as UTC to prevent Supabase timezone conversion
-    const toUtc = (d: Date) => d.toISOString().replace('T', ' ').replace('Z', '');
 
     const { data: newDevice, error: insertError } = await supabase
       .from('devices')
@@ -138,8 +139,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ 
       success: true,
       message: 'Device activated successfully', 
-      plan: license.plan,         // FIX: Returns plan to terminal
-      expires_at: newDevice.expires_at 
+      plan: license.plan,
+      expires_at: toPht(expirationDate)
     });
 
   } catch (err: any) {
