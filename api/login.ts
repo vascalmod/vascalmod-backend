@@ -57,7 +57,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await supabase.from('login_logs').insert([{
         license_key: license_key,
         hwid: hwid,
-        ip: ip || null,
+        ip: ip || '0.0.0.0',
+        status: 'success',
         city: geoData.city,
         country: geoData.country,
         isp: geoData.isp,
