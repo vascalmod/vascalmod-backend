@@ -109,7 +109,7 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
       plan: displayPlan,
       max_devices,
       strict_mode,
-      duration_days: totalSeconds / 86400,
+      duration_days: Math.floor(totalSeconds / 86400),
       duration_seconds: totalSeconds,
       created_at: new Date().toISOString(),
     });
