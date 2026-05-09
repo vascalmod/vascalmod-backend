@@ -72,7 +72,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(403).json({ error: 'This license has been revoked.' });
     }
 
-    if (new Date() > new Date(license.expires_at)) {
+    if (license.expires_at && new Date() > new Date(license.expires_at)) {
       return res.status(403).json({ error: 'This license has expired.' });
     }
 
@@ -118,6 +118,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const activationDate = new Date();
+    const deviceExpiry = license.expires_at
+      ? new Date(license.expires_at)
+      : new Date(activationDate.getTime() + (license.duration_seconds ?? 3600) * 1000);
 
     const { data: newDevice, error: insertError } = await supabase
       .from('devices')
@@ -126,7 +129,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         hwid,
         ip: ip || null,
         activated_at: toUtc(activationDate),
-        expires_at: toUtc(new Date(license.expires_at)),
+        expires_at: toUtc(deviceExpiry),
         last_used: toUtc(activationDate),
         last_seen: toUtc(activationDate)
       }])
@@ -141,7 +144,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       success: true,
       message: 'Device activated successfully', 
       plan: license.plan,
-      expires_at: toPht(new Date(license.expires_at))
+      expires_at: toPht(deviceExpiry)
     });
 
   } catch (err: any) {
