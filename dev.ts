@@ -91,6 +91,7 @@ app.post('/api/login', async (req: Request, res: Response) => {
 
     if (licenseError || !license) return res.status(404).json({ error: 'Invalid license key' });
     if (license.revoked) return res.status(403).json({ error: 'License has been revoked' });
+    if (new Date() > new Date(license.expires_at)) return res.status(403).json({ error: 'This license has expired.' });
 
     let clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
     if (clientIp === '::1' || clientIp === '::ffff:127.0.0.1') clientIp = '127.0.0.1';
@@ -119,18 +120,15 @@ app.post('/api/login', async (req: Request, res: Response) => {
       status = 'failed_limit';
       message = 'Maximum devices exceeded';
     } else {
-      const deviceExpiration = new Date();
-      deviceExpiration.setDate(deviceExpiration.getDate() + license.duration_days);
-      expires_at = deviceExpiration.toISOString();
-
       await supabase.from('devices').insert({
         license_key,
         hwid: normalizedHWID,
         ip: clientIp,
         activated_at: new Date().toISOString(),
         last_seen: new Date().toISOString(),
-        expires_at: expires_at
+        expires_at: new Date(license.expires_at).toISOString()
       });
+      expires_at = new Date(license.expires_at).toISOString();
       status = 'success';
       message = 'Device activated successfully';
     }
