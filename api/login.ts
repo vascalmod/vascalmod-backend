@@ -118,9 +118,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const activationDate = new Date();
-    const deviceExpiry = license.expires_at
+    const isCustom = license.plan?.toLowerCase().startsWith('custom');
+
+    // Use remaining_seconds if available (carried over from device reset), otherwise use license duration
+    const hasRemaining = license.remaining_seconds && license.remaining_seconds > 0;
+    const effectiveDuration = hasRemaining ? license.remaining_seconds : (license.duration_seconds ?? 3600);
+    const deviceExpiry = !isCustom && license.expires_at && !hasRemaining
       ? new Date(license.expires_at)
-      : new Date(activationDate.getTime() + (license.duration_seconds ?? 3600) * 1000);
+      : new Date(activationDate.getTime() + effectiveDuration * 1000);
 
     const { data: newDevice, error: insertError } = await supabase
       .from('devices')
@@ -137,6 +142,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .single();
 
     if (insertError) throw insertError;
+
+    // Clear remaining_seconds after successfully activating a new device
+    if (hasRemaining) {
+      await supabase.from('licenses').update({ remaining_seconds: null }).eq('key', license_key);
+    }
 
     await recordLoginLog();
 

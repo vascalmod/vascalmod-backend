@@ -120,9 +120,12 @@ app.post('/api/login', async (req: Request, res: Response) => {
       status = 'failed_limit';
       message = 'Maximum devices exceeded';
     } else {
-      const deviceExpiry = license.expires_at
+      const isCustom = license.plan?.toLowerCase().startsWith('custom');
+      const hasRemaining = license.remaining_seconds && license.remaining_seconds > 0;
+      const effectiveDuration = hasRemaining ? license.remaining_seconds : (license.duration_seconds ?? 3600);
+      const deviceExpiry = !isCustom && license.expires_at && !hasRemaining
         ? new Date(license.expires_at)
-        : new Date(Date.now() + (license.duration_seconds ?? 3600) * 1000);
+        : new Date(Date.now() + effectiveDuration * 1000);
       await supabase.from('devices').insert({
         license_key,
         hwid: normalizedHWID,
@@ -134,6 +137,11 @@ app.post('/api/login', async (req: Request, res: Response) => {
       expires_at = deviceExpiry.toISOString();
       status = 'success';
       message = 'Device activated successfully';
+
+      // Clear remaining_seconds after successfully activating a new device
+      if (hasRemaining) {
+        await supabase.from('licenses').update({ remaining_seconds: null }).eq('key', license_key);
+      }
     }
 
     await supabase.from('login_logs').insert({
@@ -184,8 +192,60 @@ app.post('/api/licenses', async (req: Request, res: Response) => {
       return res.json({ success: true, data });
     }
 
-    const { plan = '1D', max_devices = 3, expiration_days = null, strict_mode = false } = req.body;
-    const licenseKey = `LIC-${Date.now()}-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
+    if (req.query.action === 'lock') {
+      const { license_key } = req.body;
+      const { data } = await supabase.from('licenses').update({ revoked: true, revoked_at: new Date().toISOString() }).eq('key', license_key).select();
+      return res.json({ success: true, data });
+    }
+
+    if (req.query.action === 'unlock') {
+      const { license_key } = req.body;
+      const { data } = await supabase.from('licenses').update({ revoked: false, revoked_at: null }).eq('key', license_key).select();
+      return res.json({ success: true, data });
+    }
+
+    if (req.query.action === 'reset-devices') {
+      const { license_key } = req.body;
+      const now = new Date();
+      const { data: devices } = await supabase.from('devices').select('expires_at').eq('license_key', license_key);
+      let maxRemaining = 0;
+      if (devices) {
+        for (const d of devices) {
+          const remaining = Math.floor((new Date(d.expires_at).getTime() - now.getTime()) / 1000);
+          if (remaining > maxRemaining) maxRemaining = remaining;
+        }
+      }
+      const { error } = await supabase.from('devices').delete().eq('license_key', license_key);
+      if (error) return res.status(500).json({ error: error.message });
+      if (maxRemaining > 0) {
+        await supabase.from('licenses').update({ remaining_seconds: maxRemaining }).eq('key', license_key);
+      }
+      return res.json({ success: true, message: 'All devices removed', remaining_seconds: maxRemaining });
+    }
+
+    if (req.query.action === 'remove-device') {
+      const { device_id, license_key } = req.body;
+      const now = new Date();
+      const { data: device } = await supabase.from('devices').select('expires_at').eq('id', device_id).single();
+      const { error } = await supabase.from('devices').delete().eq('id', device_id);
+      if (error) return res.status(500).json({ error: error.message });
+      if (device) {
+        const remaining = Math.floor((new Date(device.expires_at).getTime() - now.getTime()) / 1000);
+        if (remaining > 0 && license_key) {
+          await supabase.from('licenses').update({ remaining_seconds: remaining }).eq('key', license_key);
+        }
+      }
+      return res.json({ success: true, message: 'Device removed' });
+    }
+
+    const { plan = '1D', max_devices = 3, expiration_days = null, strict_mode = false, prefix = '', name = '', features = null } = req.body;
+    const random = Math.random().toString(36).substring(2, 9).toUpperCase();
+    const keyParts = ['VSCL'];
+    if (prefix) {
+      keyParts.push(prefix.toUpperCase().replace(/[^A-Z0-9_-]/g, ''));
+    }
+    keyParts.push(random);
+    const licenseKey = keyParts.join('-');
 
     let daysToAdd = 1;
     let displayPlan = plan;
@@ -200,7 +260,9 @@ app.post('/api/licenses', async (req: Request, res: Response) => {
 
     const { data } = await supabase.from('licenses').insert({
       key: licenseKey, plan: displayPlan, max_devices, strict_mode,
-      duration_days: daysToAdd, revoked: false, created_at: new Date().toISOString()
+      duration_days: daysToAdd, revoked: false, created_at: new Date().toISOString(),
+      name: name || null,
+      features: features || null
     }).select();
 
     res.status(201).json({ success: true, data });

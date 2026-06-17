@@ -88,10 +88,19 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
       expiration_days = null,
       expiration_hours = 0,
       expiration_minutes = 0,
+      prefix = '',
+      name = '',
+      features = null,
     } = req.body;
 
-    // Generate unique license key
-    const licenseKey = `VSCL-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
+    // Generate unique license key with optional custom prefix
+    const random = crypto.randomBytes(6).toString('hex').toUpperCase();
+    const keyParts = ['VSCL'];
+    if (prefix) {
+      keyParts.push(prefix.toUpperCase().replace(/[^A-Z0-9_-]/g, ''));
+    }
+    keyParts.push(random);
+    const licenseKey = keyParts.join('-');
 
     // Calculate total duration in seconds from days + hours + minutes
     let totalSeconds = 0;
@@ -122,6 +131,8 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
       duration_days: totalSeconds > 0 ? Math.ceil(totalSeconds / 86400) : 1,
       duration_seconds: totalSeconds,
       created_at: new Date().toISOString(),
+      name: name || null,
+      features: features || null,
     });
 
     if (error) {
@@ -136,6 +147,8 @@ async function createLicense(req: VercelRequest, res: VercelResponse) {
         max_devices,
         strict_mode,
         duration_days: totalSeconds / 86400,
+        name: name || null,
+        features: features || null,
       },
     });
   } catch (error: any) {
@@ -177,6 +190,126 @@ async function revokeLicense(req: VercelRequest, res: VercelResponse) {
   }
 }
 
+// POST /api/licenses/lock - Lock a license (revoke without deleting devices)
+async function lockLicense(req: VercelRequest, res: VercelResponse) {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    const verified = verifyJWT(token || '', true);
+    if (!verified) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { license_key } = req.body;
+    const { error } = await supabase
+      .from('licenses')
+      .update({ revoked: true, revoked_at: new Date().toISOString() })
+      .eq('key', license_key);
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.status(200).json({ success: true, message: 'License locked' });
+  } catch (error) {
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// POST /api/licenses/unlock - Unlock a previously locked license
+async function unlockLicense(req: VercelRequest, res: VercelResponse) {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    const verified = verifyJWT(token || '', true);
+    if (!verified) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { license_key } = req.body;
+    const { error } = await supabase
+      .from('licenses')
+      .update({ revoked: false, revoked_at: null })
+      .eq('key', license_key);
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.status(200).json({ success: true, message: 'License unlocked' });
+  } catch (error) {
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// POST /api/licenses/reset-devices - Remove all devices, carry over remaining time
+async function resetDevices(req: VercelRequest, res: VercelResponse) {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    const verified = verifyJWT(token || '', true);
+    if (!verified) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { license_key } = req.body;
+    const now = new Date();
+
+    // Get devices to calculate max remaining seconds
+    const { data: devices } = await supabase
+      .from('devices')
+      .select('expires_at')
+      .eq('license_key', license_key);
+
+    let maxRemaining = 0;
+    if (devices) {
+      for (const d of devices) {
+        const remaining = Math.floor((new Date(d.expires_at).getTime() - now.getTime()) / 1000);
+        if (remaining > maxRemaining) maxRemaining = remaining;
+      }
+    }
+
+    // Delete all devices
+    const { error } = await supabase
+      .from('devices')
+      .delete()
+      .eq('license_key', license_key);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Store remaining time on license so next activation carries it forward
+    if (maxRemaining > 0) {
+      await supabase.from('licenses').update({ remaining_seconds: maxRemaining }).eq('key', license_key);
+    }
+
+    return res.status(200).json({ success: true, message: 'All devices removed', remaining_seconds: maxRemaining });
+  } catch (error) {
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// POST /api/licenses/remove-device - Remove a specific device, carry over its remaining time
+async function removeDevice(req: VercelRequest, res: VercelResponse) {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    const verified = verifyJWT(token || '', true);
+    if (!verified) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { device_id, license_key } = req.body;
+    const now = new Date();
+
+    // Get the device's remaining time before deleting
+    const { data: device } = await supabase
+      .from('devices')
+      .select('expires_at')
+      .eq('id', device_id)
+      .single();
+
+    const { error } = await supabase
+      .from('devices')
+      .delete()
+      .eq('id', device_id);
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    if (device) {
+      const remaining = Math.floor((new Date(device.expires_at).getTime() - now.getTime()) / 1000);
+      if (remaining > 0 && license_key) {
+        await supabase.from('licenses').update({ remaining_seconds: remaining }).eq('key', license_key);
+      }
+    }
+
+    return res.status(200).json({ success: true, message: 'Device removed' });
+  } catch (error) {
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // Main router
 export default function handler(
   req: VercelRequest,
@@ -206,6 +339,26 @@ export default function handler(
   // POST /api/licenses/revoke
   if (method === 'POST' && query.action === 'revoke') {
     return revokeLicense(req, res);
+  }
+
+  // POST /api/licenses/lock
+  if (method === 'POST' && query.action === 'lock') {
+    return lockLicense(req, res);
+  }
+
+  // POST /api/licenses/unlock
+  if (method === 'POST' && query.action === 'unlock') {
+    return unlockLicense(req, res);
+  }
+
+  // POST /api/licenses/reset-devices
+  if (method === 'POST' && query.action === 'reset-devices') {
+    return resetDevices(req, res);
+  }
+
+  // POST /api/licenses/remove-device
+  if (method === 'POST' && query.action === 'remove-device') {
+    return removeDevice(req, res);
   }
 
   return res.status(404).json({ error: 'Not found' });
